@@ -2,17 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+void cuenta_regresiva(int segundos);
+
 int main(){
-    int semaforoRojo = 0;
+    int semaforoRojo = 1;
     int semaforoAmarillo = 0;
     int semaforoVerde = 0;
 
-    //Siempre inicia en rojo
     while(1){
-        printf("Semaforo Rojo: %d\n", semaforoRojo);
-        printf("Semaforo Amarillo: %d\n", semaforoAmarillo);
-        printf("Semaforo Verde: %d\n", semaforoVerde);
-        printf("\n");
 
         if(semaforoRojo == 1){
             semaforoRojo = 0;
@@ -24,10 +21,14 @@ int main(){
         else if(semaforoAmarillo == 1){
             semaforoAmarillo = 0;
             semaforoVerde = 1;
+            printf("[VERDE]\n");
+            cuenta_regresiva(10);
         }
         else if(semaforoVerde == 1){
             semaforoVerde = 0;
             semaforoRojo = 1;
+            printf("[ROJO]\n");
+            cuenta_regresiva(15);
         }
     }
 }
@@ -35,7 +36,7 @@ int main(){
 
 void cuenta_regresiva(int segundos) {
     while (segundos > 0) {
-        printf("Tiempo restante: %d segundos\r", segundos);
+        printf("Tiempo restante: %d segundos\n", segundos);
         fflush(stdout);  // fuerza a imprimir en tiempo real
         sleep(1);
         segundos--;
