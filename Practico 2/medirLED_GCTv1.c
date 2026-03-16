@@ -2,22 +2,16 @@
  * latencia_boton.c
  * Medición de latencia y jitter – Raspberry Pi 3B+ V1.4
  *
- * Mide el tiempo entre el evento del botón (interrupción GPIO)
- * y el encendido efectivo del LED, calculando estadísticas.
- *
  * Compilar:
  *   gcc -o latencia_boton latencia_boton.c -lpigpio -lpthread -lm
- *
  * Ejecutar:
  *   sudo ./latencia_boton
- *
- * Prueba de carga (en otra terminal SSH):
- *   stress --cpu 4 --io 2 --vm 2 --vm-bytes 128M
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <time.h>
 #include <math.h>
@@ -26,12 +20,11 @@
 /* ── Configuración ─────────────────────────────────────────── */
 #define LED_PIN      17
 #define BUTTON_PIN   18
-#define DEBOUNCE_US  20000       /* Filtro anti-rebote: 20ms    */
-#define MAX_MUESTRAS 100         /* Máximo de pulsaciones       */
-#define MIN_MUESTRAS 20          /* Mínimo requerido            */
+#define DEBOUNCE_US  20000
+#define MAX_MUESTRAS 100
+#define MIN_MUESTRAS 20
 /* ─────────────────────────────────────────────────────────── */
 
-/* ── Obtener tiempo actual en microsegundos ─────────────────*/
 static int64_t tiempo_us(void)
 {
     struct timespec ts;
@@ -39,30 +32,27 @@ static int64_t tiempo_us(void)
     return (int64_t)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000LL;
 }
 
-/* ── Variables compartidas entre callback y main ────────────*/
-static volatile int64_t t_evento   = 0;   /* timestamp del botón    */
-static volatile int     nuevo_dato = 0;   /* flag: hay dato nuevo   */
+/* ── Variables compartidas — ahora atómicas ─────────────────*/
+static _Atomic int64_t t_evento   = 0;
+static _Atomic int     nuevo_dato = 0;
 
-static int64_t latencias[MAX_MUESTRAS];   /* array de resultados    */
-static int     n_muestras = 0;            /* contador de muestras   */
+static int64_t latencias[MAX_MUESTRAS];
+static int     n_muestras = 0;
 
-/* ── Callback del botón ─────────────────────────────────────
- * Se ejecuta cuando el botón cambia de estado.
- * SOLO registra el timestamp — el LED se enciende en main()
- * para poder medir la latencia real entre ambos instantes.
- * ─────────────────────────────────────────────────────────── */
+/* ── Callback del botón ─────────────────────────────────────*/
 void button_callback(int gpio, int level, uint32_t tick)
 {
-    if (level == 0) {                      /* botón presionado       */
-        t_evento   = tiempo_us();          /* T1: instante del evento */
-        nuevo_dato = 1;                    /* avisa al main()        */
+    if (level == 0) {
+        /* Barrera de escritura: t_evento se escribe ANTES de nuevo_dato */
+        atomic_store_explicit(&t_evento,   tiempo_us(), memory_order_relaxed);
+        atomic_store_explicit(&nuevo_dato, 1,           memory_order_release);
     } else {
         gpioWrite(LED_PIN, 0);
         printf("  BOTÓN_LIBERADO\n\n");
     }
 }
 
-/* ── Imprimir tabla de resultados ───────────────────────────*/
+/* ── Imprimir tabla ──────────────────────────────────────── */
 void imprimir_tabla(void)
 {
     int64_t suma = 0, minima = latencias[0], maxima = latencias[0];
@@ -76,23 +66,22 @@ void imprimir_tabla(void)
 
     for (int i = 0; i < n_muestras; i++) {
         printf("║    %3d    ║ %10lld µs            ║\n",
-                i + 1, (long long)latencias[i]);
-
+               i + 1, (long long)latencias[i]);
         suma += latencias[i];
         if (latencias[i] < minima) minima = latencias[i];
         if (latencias[i] > maxima) maxima = latencias[i];
     }
 
-    double promedio = (double)suma / n_muestras;
-    int64_t jitter  = maxima - minima;
+    double  promedio = (double)suma / n_muestras;
+    int64_t jitter   = maxima - minima;
 
-    /* Desviación estándar */
+    /* Desviación estándar — corregida con N-1 (Bessel) */
     double varianza = 0;
     for (int i = 0; i < n_muestras; i++) {
         double diff = (double)latencias[i] - promedio;
         varianza += diff * diff;
     }
-    double desvio = sqrt(varianza / n_muestras);
+    double desvio = sqrt(varianza / (n_muestras - 1));
 
     printf("╠═══════════╩══════════════════════════╣\n");
     printf("║  ESTADÍSTICAS                        ║\n");
@@ -106,45 +95,35 @@ void imprimir_tabla(void)
     printf("╚══════════════════════════════════════╝\n\n");
 }
 
-/* ── Guardar resultados en archivo CSV ──────────────────────*/
+/* ── Guardar CSV ─────────────────────────────────────────── */
 void guardar_csv(void)
 {
     FILE *f = fopen("latencias.csv", "w");
-    if (!f) {
-        printf("Advertencia: no se pudo guardar el CSV.\n");
-        return;
-    }
-
+    if (!f) { printf("Advertencia: no se pudo guardar el CSV.\n"); return; }
     fprintf(f, "pulsacion,latencia_us\n");
-    for (int i = 0; i < n_muestras; i++) {
+    for (int i = 0; i < n_muestras; i++)
         fprintf(f, "%d,%lld\n", i + 1, (long long)latencias[i]);
-    }
     fclose(f);
     printf("Resultados guardados en: latencias.csv\n");
 }
 
-/* ── Handler Ctrl+C: mostrar resultados parciales ──────────*/
+/* ── Handler Ctrl+C ──────────────────────────────────────── */
 void sigint_handler(int sig)
 {
     (void)sig;
     printf("\n\nInterrumpido por el usuario.\n");
-    if (n_muestras >= MIN_MUESTRAS) {
+    if (n_muestras > 0) {
         imprimir_tabla();
         guardar_csv();
     } else {
-        printf("Solo %d muestras registradas (mínimo %d).\n",
-               n_muestras, MIN_MUESTRAS);
-        if (n_muestras > 0) {
-            imprimir_tabla();
-            guardar_csv();
-        }
+        printf("Sin muestras registradas.\n");
     }
     gpioWrite(LED_PIN, 0);
     gpioTerminate();
     exit(0);
 }
 
-/* ── main ───────────────────────────────────────────────────*/
+/* ── main ────────────────────────────────────────────────── */
 int main(void)
 {
     signal(SIGINT, sigint_handler);
@@ -172,42 +151,34 @@ int main(void)
     printf("║  Presioná el botón %2d veces...       ║\n", MIN_MUESTRAS);
     printf("╚══════════════════════════════════════╝\n\n");
 
-    /*
-     * Bucle principal:
-     * Espera que el callback ponga nuevo_dato=1,
-     * luego enciende el LED y mide T2 - T1 = latencia.
-     */
     while (n_muestras < MAX_MUESTRAS) {
 
-        /* Esperar evento del botón */
-        while (!nuevo_dato) {
-            /* busy-wait intencional para minimizar latencia adicional */
-        }
-        nuevo_dato = 0;
+        /* Espera con barrera de lectura — evita reordenamiento */
+        while (!atomic_load_explicit(&nuevo_dato, memory_order_acquire))
+            __sync_synchronize();
 
-        /* T2: instante de encendido del LED */
+        atomic_store_explicit(&nuevo_dato, 0, memory_order_relaxed);
+
+        /* T2: leer t_evento YA con garantía de orden */
+        int64_t t1   = atomic_load_explicit(&t_evento, memory_order_relaxed);
         int64_t t_led = tiempo_us();
         gpioWrite(LED_PIN, 1);
 
-        /* Calcular y registrar latencia */
-        int64_t latencia = t_led - t_evento;
+        int64_t latencia = t_led - t1;
         latencias[n_muestras] = latencia;
         n_muestras++;
 
         printf("  [%2d/%d] BOTÓN_PRESIONADO → Latencia: %lld µs\n",
                n_muestras, MIN_MUESTRAS, (long long)latencia);
 
-        /* Avisar cuando se alcanza el mínimo */
         if (n_muestras == MIN_MUESTRAS) {
             printf("\n  ✓ Mínimo alcanzado. Podés seguir o presionar\n");
             printf("    Ctrl+C para ver los resultados.\n\n");
         }
     }
 
-    /* Si llegó a MAX_MUESTRAS */
     imprimir_tabla();
     guardar_csv();
-
     gpioWrite(LED_PIN, 0);
     gpioTerminate();
     return 0;
