@@ -3,7 +3,7 @@
 #include <unistd.h>
 
 // Definición de los pines (usando numeración BCM)
-#define PIN_SERVO 18 
+#define PIN_SERVO 24 
 #define PIN_BOTON 17
 
 // Parámetros del Servo según consigna
