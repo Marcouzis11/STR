@@ -31,10 +31,11 @@
 #define PRESSURE_MIN           800
 #define PRESSURE_MAX           1100
 
-#define MORSE_DOT_MAX_MS       350
+#define MORSE_DOT_MAX_MS       250
 #define MORSE_DASH_MIN_MS      250
-#define INTER_SYMBOL_TIMEOUT_MS    500
-#define SEQUENCE_TIMEOUT_MS     1500
+#define MORSE_MIN_TOUCH_MS     100
+#define INTER_SYMBOL_TIMEOUT_MS    2000
+#define SEQUENCE_TIMEOUT_MS     3000
 #define STUCK_FINGER_TIMEOUT_MS 3000
 
 #define MAX_LOG_LINE_LENGTH    256

@@ -9,7 +9,7 @@ int laser_barrier_init(int gpio) {
 }
 
 bool laser_barrier_is_broken(int handle, int gpio) {
-    /* Salida del LM393: nivel bajo cuando el haz laser esta interrumpido. */
+    /* LM393: nivel alto cuando el haz laser esta interrumpido (sin luz). */
     int level = gpio_read(handle, gpio);
-    return (level == 0);
+    return (level == 1);
 }

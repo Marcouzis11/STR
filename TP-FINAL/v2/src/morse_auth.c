@@ -79,8 +79,12 @@ void morse_auth_update(morse_context_t* ctx, bool pressed, uint32_t now_ms) {
             } else if (falling) {
                 if (held >= MORSE_DASH_MIN_MS) {
                     append_symbol(ctx, '-');
-                } else if (held <= MORSE_DOT_MAX_MS) {
+                    printf("[MORSE] Symbol: - (held=%ums)\n", held);
+                } else if (held >= MORSE_MIN_TOUCH_MS && held <= MORSE_DOT_MAX_MS) {
                     append_symbol(ctx, '.');
+                    printf("[MORSE] Symbol: . (held=%ums)\n", held);
+                } else if (held > 0) {
+                    printf("[MORSE] Ignored (held=%ums < min)\n", held);
                 }
                 ctx->last_release_ms = now_ms;
                 ctx->state = MORSE_STATE_GAP;

@@ -9,7 +9,6 @@ int ttp223b_init(int gpio) {
 }
 
 bool ttp223b_is_pressed(int handle, int gpio) {
-    /* TTP223B en modo activo-alto: nivel 1 mientras se toca el sensor. */
     int level = gpio_read(handle, gpio);
     return (level == 1);
 }

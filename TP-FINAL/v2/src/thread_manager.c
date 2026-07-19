@@ -113,33 +113,31 @@ void* env_monitor_thread(void* arg) {
     system_context_t* ctx = (system_context_t*)arg;
     printf("[ENV_MONITOR] Thread started (5s interval)\n");
 
-    int dht_handle = dht11_init(0, DHT11_GPIO);
+    /* -------------------------------------------------------------------------
+     * NOTA: El DHT11 usa bit-banging 1-Wire cuyo timing es incompatible con
+     * la Raspberry Pi 5. Las interrupciones del kernel alteran las esperas de
+     * microsegundos requeridas por el protocolo, causando lecturas cero o
+     * invalidas. El sensor DHT11 queda documentado pero deshabilitado.
+     * Solucion: se usa solo el BMP280 para temperatura y presion.
+     * ------------------------------------------------------------------------- */
+    // int dht_handle = dht11_init(0, DHT11_GPIO);
     int bmp_handle = bmp280_init(BMP280_I2C_BUS, BMP280_I2C_ADDR);
 
     while (1) {
-        dht11_reading_t dht = dht11_read(dht_handle);
+        // dht11_reading_t dht = dht11_read(dht_handle);
         bmp280_reading_t bmp = bmp280_read(bmp_handle);
 
-        if (dht.valid && bmp.valid) {
+        if (bmp.valid) {
             pthread_mutex_lock(&ctx->mutex_env);
-            ctx->env_data.dht11_temp = dht.temperature;
-            ctx->env_data.dht11_humidity = dht.humidity;
             ctx->env_data.bmp280_temp = bmp.temperature;
             ctx->env_data.bmp280_pressure = bmp.pressure;
             ctx->env_data.timestamp = time(NULL);
             pthread_mutex_unlock(&ctx->mutex_env);
 
             log_enqueue(ctx, LOG_ENV,
-                "T_dht=%.1fC H=%.0f%% T_bmp=%.1fC P=%.1fhPa",
-                dht.temperature, dht.humidity, bmp.temperature, bmp.pressure);
+                "T_bmp=%.1fC P=%.1fhPa",
+                bmp.temperature, bmp.pressure);
 
-            float diff = dht.temperature - bmp.temperature;
-            if (diff < 0) diff = -diff;
-            if (diff > TEMP_DIFF_THRESHOLD) {
-                log_enqueue(ctx, LOG_ALERT,
-                    "TEMP_DIFF_EXCEEDED diff=%.1fC (umbral=%.1f)",
-                    diff, (float)TEMP_DIFF_THRESHOLD);
-            }
             if (bmp.pressure < PRESSURE_MIN || bmp.pressure > PRESSURE_MAX) {
                 log_enqueue(ctx, LOG_ALERT,
                     "PRESSURE_OUT_OF_RANGE p=%.1fhPa", bmp.pressure);
@@ -205,27 +203,51 @@ void* security_thread(void* arg) {
 /* ------------------------------------------------------------------ */
 /* Hilo de autenticacion Morse (event-driven, poll 10 ms)             */
 /* ------------------------------------------------------------------ */
+#define MORSE_DEBOUNCE_MS 80
+
 void* morse_auth_thread(void* arg) {
     system_context_t* ctx = (system_context_t*)arg;
     printf("[MORSE_AUTH] Thread started\n");
 
     int ttp_handle = ttp223b_init(TTP223B_GPIO);
 
+    bool debounced = false;
+    uint32_t debounce_start_ms = 0;
+
     while (1) {
-        bool pressed = ttp223b_is_pressed(ttp_handle, TTP223B_GPIO);
+        bool raw = ttp223b_is_pressed(ttp_handle, TTP223B_GPIO);
         uint32_t now_ms = (uint32_t)(gpio_now_us() / 1000);
+
+        if (raw != debounced) {
+            if (debounce_start_ms == 0) {
+                debounce_start_ms = now_ms;
+            } else if (now_ms - debounce_start_ms >= MORSE_DEBOUNCE_MS) {
+                debounced = raw;
+                debounce_start_ms = 0;
+            }
+        } else {
+            debounce_start_ms = 0;
+        }
 
         char seq[MORSE_BUFFER_SIZE] = {0};
         bool complete = false;
+        bool symbol_added = false;
+        uint8_t prev_pos = 0;
 
         pthread_mutex_lock(&ctx->mutex_morse);
-        morse_auth_update(&ctx->morse_ctx, pressed, now_ms);
+        prev_pos = ctx->morse_ctx.buffer_pos;
+        morse_auth_update(&ctx->morse_ctx, debounced, now_ms);
+        symbol_added = (ctx->morse_ctx.buffer_pos > prev_pos);
         if (ctx->morse_ctx.state == MORSE_STATE_SEQUENCE_COMPLETE) {
             strncpy(seq, morse_auth_get_sequence(&ctx->morse_ctx), sizeof(seq) - 1);
             morse_auth_reset(&ctx->morse_ctx);
             complete = true;
         }
         pthread_mutex_unlock(&ctx->mutex_morse);
+
+        if (symbol_added) {
+            alarm_blink_led(LED_YELLOW_GPIO, 1, 50);
+        }
 
         /* Procesamos la secuencia FUERA de mutex_morse para no anidar bloqueos. */
         if (complete) {
